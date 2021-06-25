@@ -596,6 +596,8 @@ AS INSERT INTO [dbo].[t2](a) SELECT a FROM INSERTED";
 			var script = File.ReadAllText(db.Name + "\\triggers\\TR_1.sql");
 
 			StringAssert.DoesNotContain("INSERTEDENABLE", script);
+
+			StringAssert.Contains("INSERTED\r\nGO\r\nENABLE", script);
 		}
 
 		[Test]

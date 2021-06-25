@@ -11,9 +11,13 @@ using SchemaZen.Library.Models.Comparers;
 
 namespace SchemaZen.Library.Models {
 	public class Database {
+
+		private IList<string> schemas = new List<string>();
+		private string schemaIn = "";
+
 		#region " Constructors "
 
-		public Database(IList<string> filteredTypes = null) {
+		public Database(IList<string> filteredTypes = null, IList<string> schemas = null) {
 			Props.Add(new DbProp("COMPATIBILITY_LEVEL", ""));
 			Props.Add(new DbProp("COLLATE", ""));
 			Props.Add(new DbProp("AUTO_CLOSE", ""));
@@ -45,10 +49,12 @@ namespace SchemaZen.Library.Models {
 			foreach (var filteredType in filteredTypes) {
 				Dirs.Remove(filteredType);
 			}
+
+			this.schemas = schemas;
 		}
 
-		public Database(string name, IList<string> filteredTypes = null)
-			: this(filteredTypes) {
+		public Database(string name, IList<string> filteredTypes = null, IList<string> schemas = null)
+			: this(filteredTypes, schemas) {
 			Name = name;
 		}
 
@@ -166,8 +172,11 @@ namespace SchemaZen.Library.Models {
 		#endregion
 
 		#region Load
-
-		public void Load() {
+		public void Load()
+		{
+			Load(30);
+		}
+		public void Load(int commandTimeout) {
 			Tables.Clear();
 			TableTypes.Clear();
 			Routines.Clear();
@@ -183,8 +192,13 @@ namespace SchemaZen.Library.Models {
 			using (var cn = new SqlConnection(Connection)) {
 				cn.Open();
 				using (var cm = cn.CreateCommand()) {
+					cm.CommandTimeout = commandTimeout;
 					LoadProps(cm);
 					LoadSchemas(cm);
+
+					schemas = schemas.Union(new []{ "dbo" }).ToList();
+					schemaIn = "(" + string.Join(",", schemas.Select(s => $"'{s}'").ToArray()) + ")";
+
 					LoadTables(cm);
 					LoadUserDefinedTypes(cm);
 					LoadColumns(cm);
@@ -207,9 +221,10 @@ namespace SchemaZen.Library.Models {
 
 		private void LoadSynonyms(SqlCommand cm) {
 			try {
-				// get synonyms
-				cm.CommandText = @"
+				Console.WriteLine("-- Loading synonyms");
+				cm.CommandText = $@"
 						select object_schema_name(object_id) as schema_name, name as synonym_name, base_object_name
+						where object_schema_name(object_id) in {schemaIn}
 						from sys.synonyms";
 				using (var dr = cm.ExecuteReader()) {
 					while (dr.Read()) {
@@ -226,16 +241,16 @@ namespace SchemaZen.Library.Models {
 
 		private void LoadPermissions(SqlCommand cm) {
 			try {
-				// get permissions
+				Console.WriteLine("-- Loading Permissions");
 				// based on http://sql-articles.com/scripts/script-to-retrieve-security-information-sql-server-2005-and-above/
-				cm.CommandText = @"
+				cm.CommandText = $@"
 						select 
 								U.name as user_name, 
 								O.name as object_name,  
 								permission_name as permission
 						from sys.database_permissions
 						join sys.sysusers U on grantee_principal_id = uid 
-						join sys.sysobjects O on major_id = id ";
+						join sys.sysobjects O on major_id = id and object_schema_name(id) in {schemaIn}";
 				using (var dr = cm.ExecuteReader()) {
 					while (dr.Read()) {
 						var permission = new Permission((string)dr["user_name"],
@@ -249,6 +264,7 @@ namespace SchemaZen.Library.Models {
 		}
 
 		private void LoadRoles(SqlCommand cm) {
+			Console.WriteLine("-- Loading Roles");
 			//Roles are complicated.  This was adapted from https://dbaeyes.wordpress.com/2013/04/19/fully-script-out-a-mssql-database-role/
 			cm.CommandText = @"
 create table #ScriptedRoles (
@@ -365,7 +381,7 @@ from #ScriptedRoles
 		}
 
 		private void LoadUsersAndLogins(SqlCommand cm) {
-			// get users that have access to the database
+			Console.WriteLine("-- Loading Users");
 			cm.CommandText = @"
 				select dp.name as UserName, USER_NAME(drm.role_principal_id) as AssociatedDBRole, default_schema_name
 				from sys.database_principals dp
@@ -409,7 +425,7 @@ from #ScriptedRoles
 
 		private void LoadCLRAssemblies(SqlCommand cm) {
 			try {
-				// get CLR assemblies
+				Console.WriteLine("-- Loading CLR Assemblies");
 				cm.CommandText =
 					@"select a.name as AssemblyName, a.permission_set_desc, af.name as FileName, af.content
 						from sys.assemblies a
@@ -437,11 +453,11 @@ from #ScriptedRoles
 
 		private void LoadXmlSchemas(SqlCommand cm) {
 			try {
-				// get xml schemas
-				cm.CommandText = @"
+				Console.WriteLine("-- Loading Xml Schemas");
+				cm.CommandText = $@"
 						select s.name as DBSchemaName, x.name as XMLSchemaCollectionName, xml_schema_namespace(s.name, x.name) as definition
 						from sys.xml_schema_collections x
-						inner join sys.schemas s on s.schema_id = x.schema_id
+						inner join sys.schemas s on s.schema_id = x.schema_id and s.name in {schemaIn}
 						where s.name != 'sys'";
 				using (var dr = cm.ExecuteReader()) {
 					while (dr.Read()) {
@@ -462,8 +478,8 @@ from #ScriptedRoles
 		}
 
 		private void LoadRoutines(SqlCommand cm) {
-			//get routines
-			cm.CommandText = @"
+			Console.WriteLine("-- Loading Routines");
+			cm.CommandText = $@"
 					select
 						s.name as schemaName,
 						o.name as routineName,
@@ -476,7 +492,7 @@ from #ScriptedRoles
 						tr.is_disabled as trigger_disabled
 					from sys.sql_modules m
 						inner join sys.objects o on m.object_id = o.object_id
-						inner join sys.schemas s on s.schema_id = o.schema_id
+						inner join sys.schemas s on s.schema_id = o.schema_id and s.name in {schemaIn}
 						left join sys.triggers tr on m.object_id = tr.object_id
 						left join sys.tables t on tr.parent_id = t.object_id
 						left join sys.views v on tr.parent_id = v.object_id
@@ -516,7 +532,8 @@ from #ScriptedRoles
 		}
 
 		private void LoadCheckConstraints(SqlCommand cm) {
-			cm.CommandText = @"
+			Console.WriteLine("-- Loading Check Constraints");
+			cm.CommandText = $@"
 				SELECT 
 					OBJECT_NAME(o.OBJECT_ID) AS CONSTRAINT_NAME,
 					SCHEMA_NAME(t.schema_id) AS TABLE_SCHEMA,
@@ -529,7 +546,7 @@ from #ScriptedRoles
 				FROM sys.objects o
 					inner join sys.check_constraints cc on cc.object_id = o.object_id
 					inner join sys.tables t on t.object_id = o.parent_object_id
-					WHERE o.type_desc = 'CHECK_CONSTRAINT'
+					WHERE o.type_desc = 'CHECK_CONSTRAINT' and object_schema_name(o.object_id) in {schemaIn}
 				UNION ALL
 				SELECT 
 					OBJECT_NAME(o.OBJECT_ID) AS CONSTRAINT_NAME,
@@ -543,7 +560,7 @@ from #ScriptedRoles
 				FROM sys.objects o
 					inner join sys.check_constraints cc on cc.object_id = o.object_id
 					inner join sys.table_types tt on tt.type_table_object_id = o.parent_object_id
-					WHERE o.type_desc = 'CHECK_CONSTRAINT'
+					WHERE o.type_desc = 'CHECK_CONSTRAINT' and object_schema_name(o.object_id) in {schemaIn}
 				ORDER BY TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME
 				";
 
@@ -565,14 +582,14 @@ from #ScriptedRoles
 		}
 
 		private void LoadForeignKeys(SqlCommand cm) {
-			//get foreign keys
-			cm.CommandText = @"
+			Console.WriteLine("-- Loading Foreign Keys");
+			cm.CommandText = $@"
 					select 
 						TABLE_SCHEMA,
 						TABLE_NAME, 
 						CONSTRAINT_NAME
 					from INFORMATION_SCHEMA.TABLE_CONSTRAINTS
-					where CONSTRAINT_TYPE = 'FOREIGN KEY'";
+					where CONSTRAINT_TYPE = 'FOREIGN KEY' and TABLE_SCHEMA in {schemaIn}";
 			using (var dr = cm.ExecuteReader()) {
 				while (dr.Read()) {
 					var t = FindTable((string)dr["TABLE_NAME"], (string)dr["TABLE_SCHEMA"]);
@@ -583,7 +600,7 @@ from #ScriptedRoles
 			}
 
 			//get foreign key props
-			cm.CommandText = @"
+			cm.CommandText = $@"
 					select 
 						CONSTRAINT_NAME, 
 						OBJECT_SCHEMA_NAME(fk.parent_object_id) as TABLE_SCHEMA,
@@ -592,7 +609,8 @@ from #ScriptedRoles
 						fk.is_disabled,
                         fk.is_system_named
 					from INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
-						inner join sys.foreign_keys fk on rc.CONSTRAINT_NAME = fk.name and rc.CONSTRAINT_SCHEMA = OBJECT_SCHEMA_NAME(fk.parent_object_id)";
+						inner join sys.foreign_keys fk on rc.CONSTRAINT_NAME = fk.name and rc.CONSTRAINT_SCHEMA = OBJECT_SCHEMA_NAME(fk.parent_object_id)
+					where object_schema_name(fk.parent_object_id) in {schemaIn}";
 			using (var dr = cm.ExecuteReader()) {
 				while (dr.Read()) {
 					var fk = FindForeignKey((string)dr["CONSTRAINT_NAME"],
@@ -605,25 +623,26 @@ from #ScriptedRoles
 			}
 
 			//get foreign key columns and ref table
-			cm.CommandText = @"
-select
-	fk.name as CONSTRAINT_NAME,
-	OBJECT_SCHEMA_NAME(fk.parent_object_id) as TABLE_SCHEMA,
-	c1.name as COLUMN_NAME,
-	OBJECT_SCHEMA_NAME(fk.referenced_object_id) as REF_TABLE_SCHEMA,
-	OBJECT_NAME(fk.referenced_object_id) as REF_TABLE_NAME,
-	c2.name as REF_COLUMN_NAME
-from sys.foreign_keys fk
-inner join sys.foreign_key_columns fkc
-	on fkc.constraint_object_id = fk.object_id
-inner join sys.columns c1
-	on fkc.parent_column_id = c1.column_id
-	and fkc.parent_object_id = c1.object_id
-inner join sys.columns c2
-	on fkc.referenced_column_id = c2.column_id
-	and fkc.referenced_object_id = c2.object_id
-order by fk.name, fkc.constraint_column_id
-";
+			cm.CommandText = $@"
+				select
+					fk.name as CONSTRAINT_NAME,
+					OBJECT_SCHEMA_NAME(fk.parent_object_id) as TABLE_SCHEMA,
+					c1.name as COLUMN_NAME,
+					OBJECT_SCHEMA_NAME(fk.referenced_object_id) as REF_TABLE_SCHEMA,
+					OBJECT_NAME(fk.referenced_object_id) as REF_TABLE_NAME,
+					c2.name as REF_COLUMN_NAME
+				from sys.foreign_keys fk
+				inner join sys.foreign_key_columns fkc
+					on fkc.constraint_object_id = fk.object_id
+				inner join sys.columns c1
+					on fkc.parent_column_id = c1.column_id
+					and fkc.parent_object_id = c1.object_id
+				inner join sys.columns c2
+					on fkc.referenced_column_id = c2.column_id
+					and fkc.referenced_object_id = c2.object_id
+				where object_schema_name(fk.parent_object_id) in {schemaIn}
+				order by fk.name, fkc.constraint_column_id
+				";
 			using (var dr = cm.ExecuteReader()) {
 				while (dr.Read()) {
 					var fk = FindForeignKey((string)dr["CONSTRAINT_NAME"],
@@ -643,8 +662,8 @@ order by fk.name, fkc.constraint_column_id
 		}
 
 		private void LoadConstraintsAndIndexes(SqlCommand cm) {
-			//get constraints & indexes
-			cm.CommandText = @"
+			Console.WriteLine("-- Loading Constraints/Indexes");
+			cm.CommandText = $@"
 					select 
 						s.name as schemaName,
 						t.name as tableName, 
@@ -674,7 +693,7 @@ order by fk.name, fkc.constraint_column_id
 							and ic.index_id = i.index_id
 						inner join sys.columns c on c.object_id = t.object_id
 							and c.column_id = ic.column_id
-						inner join sys.schemas s on s.schema_id = t.schema_id
+						inner join sys.schemas s on s.schema_id = t.schema_id and s.name in {schemaIn}
 					where i.type_desc != 'HEAP'
 					order by s.name, t.name, i.name, ic.key_ordinal, ic.index_column_id";
 			using (var dr = cm.ExecuteReader()) {
@@ -722,8 +741,8 @@ order by fk.name, fkc.constraint_column_id
 		}
 
 		private void LoadColumnComputes(SqlCommand cm) {
-			//get computed column definitions
-			cm.CommandText = @"
+			Console.WriteLine("-- Loading Computed Columns");
+			cm.CommandText = $@"
 					select
 						object_schema_name(t.object_id) as TABLE_SCHEMA,
 						object_name(t.object_id) as TABLE_NAME,
@@ -733,7 +752,7 @@ order by fk.name, fkc.constraint_column_id
 						cc.is_nullable as NULLABLE,
 						cast(0 as bit) as IS_TYPE
 					from sys.computed_columns cc
-					inner join sys.tables t on cc.object_id = t.object_id
+					inner join sys.tables t on cc.object_id = t.object_id and object_schema_name(t.object_id) in {schemaIn}
 					UNION ALL
 					select 
 						SCHEMA_NAME(tt.schema_id) as TABLE_SCHEMA,
@@ -744,7 +763,7 @@ order by fk.name, fkc.constraint_column_id
 						cc.is_nullable as NULLABLE,
 						cast(1 as bit) AS IS_TYPE
 					from sys.computed_columns cc
-					inner join sys.table_types tt on cc.object_id = tt.type_table_object_id
+					inner join sys.table_types tt on cc.object_id = tt.type_table_object_id and schema_name(tt.schema_id) in {schemaIn}
 					";
 			using (var dr = cm.ExecuteReader()) {
 				while (dr.Read()) {
@@ -761,8 +780,8 @@ order by fk.name, fkc.constraint_column_id
 		}
 
 		private void LoadColumnDefaults(SqlCommand cm) {
-			//get column defaults
-			cm.CommandText = @"
+			Console.WriteLine("-- Loading Column Defaults");
+			cm.CommandText = $@"
 					select 
 						s.name as TABLE_SCHEMA,
 						t.name as TABLE_NAME, 
@@ -775,7 +794,7 @@ order by fk.name, fkc.constraint_column_id
 						inner join sys.columns c on c.object_id = t.object_id
 						inner join sys.default_constraints d on c.column_id = d.parent_column_id
 							and d.parent_object_id = c.object_id
-						inner join sys.schemas s on s.schema_id = t.schema_id
+						inner join sys.schemas s on s.schema_id = t.schema_id and s.name in {schemaIn}
 					UNION ALL
 					select 
 						s.name as TABLE_SCHEMA,
@@ -789,7 +808,7 @@ order by fk.name, fkc.constraint_column_id
 						inner join sys.columns c on c.object_id = tt.type_table_object_id
 						inner join sys.default_constraints d on c.column_id = d.parent_column_id
 							and d.parent_object_id = c.object_id
-						inner join sys.schemas s on s.schema_id = tt.schema_id
+						inner join sys.schemas s on s.schema_id = tt.schema_id and s.name in {schemaIn}
 ";
 			using (var dr = cm.ExecuteReader()) {
 				while (dr.Read()) {
@@ -805,8 +824,8 @@ order by fk.name, fkc.constraint_column_id
 		}
 
 		private void LoadColumnIdentities(SqlCommand cm) {
-			//get column identities
-			cm.CommandText = @"
+			Console.WriteLine("-- Loading Column Identities");
+			cm.CommandText = $@"
 					select 
 						s.name as TABLE_SCHEMA,
 						t.name as TABLE_NAME, 
@@ -816,7 +835,7 @@ order by fk.name, fkc.constraint_column_id
 						inner join sys.columns c on c.object_id = t.object_id
 						inner join sys.identity_columns i on i.object_id = c.object_id
 							and i.column_id = c.column_id
-						inner join sys.schemas s on s.schema_id = t.schema_id ";
+						inner join sys.schemas s on s.schema_id = t.schema_id and s.name in {schemaIn}";
 			using (var dr = cm.ExecuteReader()) {
 				while (dr.Read()) {
 					try {
@@ -835,8 +854,8 @@ order by fk.name, fkc.constraint_column_id
 		}
 
 		private void LoadColumns(SqlCommand cm) {
-			//get columns
-			cm.CommandText = @"
+			Console.WriteLine("-- Loading Columns");
+			cm.CommandText = $@"
 				select 
 					t.TABLE_SCHEMA,
 					c.TABLE_NAME,
@@ -853,6 +872,7 @@ order by fk.name, fkc.constraint_column_id
 							on t.TABLE_NAME = c.TABLE_NAME
 								and t.TABLE_SCHEMA = c.TABLE_SCHEMA
 								and t.TABLE_CATALOG = c.TABLE_CATALOG
+								and t.TABLE_SCHEMA in {schemaIn}
 				where
 					t.TABLE_TYPE = 'BASE TABLE'
 				order by t.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION
@@ -862,7 +882,7 @@ order by fk.name, fkc.constraint_column_id
 			}
 
 			try {
-				cm.CommandText = @"
+				cm.CommandText = $@"
 				select 
 					s.name as TABLE_SCHEMA,
 					tt.name as TABLE_NAME, 
@@ -878,7 +898,7 @@ order by fk.name, fkc.constraint_column_id
 					inner join sys.table_types tt
 						on tt.type_table_object_id = c.object_id
 					inner join sys.schemas s
-						on tt.schema_id = s.schema_id 
+						on tt.schema_id = s.schema_id and s.name in {schemaIn}
 					inner join sys.types t
 						on t.system_type_id = c.system_type_id
 							and t.user_type_id = c.user_type_id
@@ -935,25 +955,25 @@ order by fk.name, fkc.constraint_column_id
 		}
 
 		private void LoadTables(SqlCommand cm) {
-			//get tables
-			cm.CommandText = @"
+			Console.WriteLine("-- Loading Tables");
+			cm.CommandText = $@"
 				select 
 					TABLE_SCHEMA, 
 					TABLE_NAME 
 				from INFORMATION_SCHEMA.TABLES
-				where TABLE_TYPE = 'BASE TABLE'";
+				where TABLE_TYPE = 'BASE TABLE' and TABLE_SCHEMA  in {schemaIn}";
 			using (var dr = cm.ExecuteReader()) {
 				LoadTablesBase(dr, false, Tables);
 			}
 
 			//get table types
 			try {
-				cm.CommandText = @"
+				cm.CommandText = $@"
 				select 
 					s.name as TABLE_SCHEMA,
 					tt.name as TABLE_NAME
 				from sys.table_types tt
-				inner join sys.schemas s on tt.schema_id = s.schema_id
+				inner join sys.schemas s on tt.schema_id = s.schema_id and s.name in {schemaIn}
 				where tt.is_user_defined = 1
 				order by s.name, tt.name";
 				using (var dr = cm.ExecuteReader()) {
@@ -965,8 +985,8 @@ order by fk.name, fkc.constraint_column_id
 		}
 
 		private void LoadUserDefinedTypes(SqlCommand cm) {
-			//get types
-			cm.CommandText = @"
+			Console.WriteLine("-- Loading UDTs");
+			cm.CommandText = $@"
             select
                 s.name as 'Type_Schema',
                 t.name as 'Type_Name',
@@ -974,7 +994,7 @@ order by fk.name, fkc.constraint_column_id
                 t.max_length as 'Max_Length',
                 t.is_nullable as 'Nullable'	
             from sys.types t
-            inner join sys.schemas s on s.schema_id = t.schema_id
+            inner join sys.schemas s on s.schema_id = t.schema_id and s.name in {schemaIn}
             inner join sys.types tt on t.system_type_id = tt.user_type_id
             where
                 t.is_user_defined = 1
@@ -1004,20 +1024,31 @@ order by fk.name, fkc.constraint_column_id
 			}
 		}
 
-		private void LoadSchemas(SqlCommand cm) {
-			//get schemas
-			cm.CommandText = @"
+		private void LoadSchemas(SqlCommand cm)
+		{
+			Console.WriteLine("-- Loading Schemas");
+			var schemaRestrict = "";
+			if (schemas != null && schemas.Count > 0)
+			{
+				schemaRestrict = "and s.name in (" + string.Join(",", schemas.Select(s => $"'{s}'").ToArray()) + ")";
+			}
+			cm.CommandText = $@"
 					select s.name as schemaName, p.name as principalName
 					from sys.schemas s
 					inner join sys.database_principals p on s.principal_id = p.principal_id
 					where s.schema_id < 16384
-					and s.name not in ('dbo','guest','sys','INFORMATION_SCHEMA')
-					order by schema_id
-";
+					and s.name not in ('dbo','guest','sys','INFORMATION_SCHEMA') {schemaRestrict}
+					order by schema_id";
+
 			using (var dr = cm.ExecuteReader()) {
 				while (dr.Read()) {
 					Schemas.Add(new Schema((string)dr["schemaName"], (string)dr["principalName"]));
 				}
+			}
+
+			if (schemas == null || schemas.Count == 0)
+			{
+				schemas = Schemas.Select(s => s.Name).ToList();
 			}
 		}
 
@@ -1025,36 +1056,36 @@ order by fk.name, fkc.constraint_column_id
 			var cnStrBuilder = new SqlConnectionStringBuilder(Connection);
 			// query schema for database properties
 			cm.CommandText = @"
-select
-	[compatibility_level],
-	[collation_name],
-	[is_auto_close_on],
-	[is_auto_shrink_on],
-	[snapshot_isolation_state],
-	[is_read_committed_snapshot_on],
-	[recovery_model_desc],
-	[page_verify_option_desc],
-	[is_auto_create_stats_on],
-	[is_auto_update_stats_on],
-	[is_auto_update_stats_async_on],
-	[is_ansi_null_default_on],
-	[is_ansi_nulls_on],
-	[is_ansi_padding_on],
-	[is_ansi_warnings_on],
-	[is_arithabort_on],
-	[is_concat_null_yields_null_on],
-	[is_numeric_roundabort_on],
-	[is_quoted_identifier_on],
-	[is_recursive_triggers_on],
-	[is_cursor_close_on_commit_on],
-	[is_local_cursor_default],
-	[is_trustworthy_on],
-	[is_db_chaining_on],
-	[is_parameterization_forced],
-	[is_date_correlation_on]
-from sys.databases
-where name = @dbname
-";
+				select
+					[compatibility_level],
+					[collation_name],
+					[is_auto_close_on],
+					[is_auto_shrink_on],
+					[snapshot_isolation_state],
+					[is_read_committed_snapshot_on],
+					[recovery_model_desc],
+					[page_verify_option_desc],
+					[is_auto_create_stats_on],
+					[is_auto_update_stats_on],
+					[is_auto_update_stats_async_on],
+					[is_ansi_null_default_on],
+					[is_ansi_nulls_on],
+					[is_ansi_padding_on],
+					[is_ansi_warnings_on],
+					[is_arithabort_on],
+					[is_concat_null_yields_null_on],
+					[is_numeric_roundabort_on],
+					[is_quoted_identifier_on],
+					[is_recursive_triggers_on],
+					[is_cursor_close_on_commit_on],
+					[is_local_cursor_default],
+					[is_trustworthy_on],
+					[is_db_chaining_on],
+					[is_parameterization_forced],
+					[is_date_correlation_on]
+				from sys.databases
+				where name = @dbname
+				";
 			cm.Parameters.AddWithValue("@dbname", cnStrBuilder.InitialCatalog);
 			using (IDataReader dr = cm.ExecuteReader()) {
 				if (dr.Read()) {
@@ -1480,9 +1511,9 @@ where name = @dbname
 			// This maintains backward compatability for those who use
 			// SchemaZen to keep their schemas under version control.
 			var fileName = name;
-			if (!string.IsNullOrEmpty(schema) && schema.ToLower() != "dbo") {
+			//if (!string.IsNullOrEmpty(schema) && schema.ToLower() != "dbo") {
 				fileName = $"{schema}.{name}";
-			}
+			//}
 
 			return Path.GetInvalidFileNameChars().Aggregate(fileName,
 				(current, invalidChar) => current.Replace(invalidChar, '-'));

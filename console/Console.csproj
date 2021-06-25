@@ -120,6 +120,9 @@
       <SubType>Designer</SubType>
     </None>
     <None Include="packages.config" />
+    <Content Include="test.bat">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it.
@@ -131,7 +134,7 @@
   -->
   <PropertyGroup>
     <PostBuildEvent>"$(SolutionDir)\packages\ILMerge.2.14.1208\tools\ilmerge.exe" /target:exe /out:SchemaZen.exe console.exe SchemaZen.Library.dll ManyConsole.dll NDesk.Options.dll
-</PostBuildEvent>
+rmdir /s /q schemazentest</PostBuildEvent>
   </PropertyGroup>
   <Import Project="$(SolutionDir)\.nuget\NuGet.targets" Condition="Exists('$(SolutionDir)\.nuget\NuGet.targets')" />
 </Project>
