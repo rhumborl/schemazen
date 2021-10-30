@@ -50,5 +50,6 @@ namespace SchemaZen.console {
 		protected string DatabaseFilesPath { get; set; }
 		protected string Timeout { get; set; }
 		protected bool NoPrefixDbo { get; set; }
+		protected bool GroupObjects { get; set; }
 	}
 }

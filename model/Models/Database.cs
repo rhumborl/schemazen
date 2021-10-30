@@ -15,10 +15,11 @@ namespace SchemaZen.Library.Models {
 		private IList<string> schemas = new List<string>();
 		private string schemaIn = "";
 		private bool prefix_dbo = true;
+		private bool groupObjects = false;
 
 		#region " Constructors "
 
-		public Database(IList<string> filteredTypes = null, IList<string> schemas = null, bool prefix_dbo = true) {
+		public Database(IList<string> filteredTypes = null, IList<string> schemas = null, bool prefix_dbo = true, bool groupObjects = false) {
 			Props.Add(new DbProp("COMPATIBILITY_LEVEL", ""));
 			Props.Add(new DbProp("COLLATE", ""));
 			Props.Add(new DbProp("AUTO_CLOSE", ""));
@@ -53,10 +54,11 @@ namespace SchemaZen.Library.Models {
 
 			this.schemas = schemas;
 			this.prefix_dbo = prefix_dbo;
+			this.groupObjects = groupObjects;
 		}
 
-		public Database(string name, IList<string> filteredTypes = null, IList<string> schemas = null, bool prefix_dbo = true)
-			: this(filteredTypes, schemas, prefix_dbo) {
+		public Database(string name, IList<string> filteredTypes = null, IList<string> schemas = null, bool prefix_dbo = true, bool groupObjects = false)
+			: this(filteredTypes, schemas, prefix_dbo, groupObjects) {
 			Name = name;
 		}
 
@@ -1409,22 +1411,44 @@ namespace SchemaZen.Library.Models {
 
 			WritePropsScript(log);
 			WriteSchemaScript(log);
-			WriteScriptDir("tables", Tables.ToArray(), log);
-			foreach (var table in Tables) {
-				WriteScriptDir("check_constraints", table.Constraints.Where(c => c.Type == "CHECK").ToArray(), log);
+			if (groupObjects)
+			{
+				foreach (var table in Tables)
+				{
+					// find constraints and keys in table
+					var tableObjects = new List<IScriptable>();
+					tableObjects.Add(table);
+					tableObjects.AddRange(
+						table.Constraints.Where(c => c.Type == "CHECK").AsEnumerable<IScriptable>() // check constraints
+						.Concat(from c in table.Columns.Items where c.Default != null select c.Default) // defaults
+						.Concat(ForeignKeys.Where(fk => fk.Table == table).OrderBy(x => x, ForeignKeyComparer.Instance)) // foreign keys
+					);
 
-				var defaults = (from c in table.Columns.Items
-								where c.Default != null
-								select c.Default).ToArray();
+					WriteCombinedScriptFile("tables", tableObjects, log);
+				}
+			}
+			else
+			{
+				WriteScriptDir("tables", Tables.ToArray(), log);
+				foreach (var table in Tables)
+				{
+					WriteScriptDir("check_constraints", table.Constraints.Where(c => c.Type == "CHECK").ToArray(), log);
+					var defaults = (from c in table.Columns.Items
+									where c.Default != null
+									select c.Default).ToArray();
 
-				if (defaults.Any()) {
-					WriteScriptDir("defaults", defaults, log);
+					if (defaults.Any())
+					{
+						WriteScriptDir("defaults", defaults, log);
+					}
 				}
 			}
 			WriteScriptDir("table_types", TableTypes.ToArray(), log);
 			WriteScriptDir("user_defined_types", UserDefinedTypes.ToArray(), log);
-			WriteScriptDir("foreign_keys",
-				ForeignKeys.OrderBy(x => x, ForeignKeyComparer.Instance).ToArray(), log);
+			if (!groupObjects)
+			{
+				WriteScriptDir("foreign_keys", ForeignKeys.OrderBy(x => x, ForeignKeyComparer.Instance).ToArray(), log);
+			}
 			foreach (var routineType in Routines.GroupBy(x => x.RoutineType)) {
 				var dir = routineType.Key.ToString().ToLower() + "s";
 				WriteScriptDir(dir, routineType.ToArray(), log);
@@ -1463,20 +1487,32 @@ namespace SchemaZen.Library.Models {
 			File.WriteAllText($"{Dir}/schemas.sql", text.ToString());
 		}
 
-		private void WriteScriptDir(string name, ICollection<IScriptable> objects,
-			Action<TraceLevel, string> log) {
+		private void WriteScriptDir(string name, ICollection<IScriptable> objects, Action<TraceLevel, string> log) {
 			if (!objects.Any()) return;
 			if (!Dirs.Contains(name)) return;
 			var dir = Path.Combine(Dir, name);
 			Directory.CreateDirectory(dir);
 			var index = 0;
 			foreach (var o in objects) {
-				log(TraceLevel.Verbose,
-					$"Scripting {name} {++index} of {objects.Count}...{(index < objects.Count ? "\r" : string.Empty)}");
+				log(TraceLevel.Verbose, $"Scripting {name} {++index} of {objects.Count}...{(index < objects.Count ? "\r" : string.Empty)}");
 				var filePath = Path.Combine(dir, MakeFileName(o, prefix_dbo) + ".sql");
 				var script = o.ScriptCreate() + "\r\nGO\r\n";
 				File.AppendAllText(filePath, script);
 			}
+		}
+
+		private void WriteCombinedScriptFile(string name, ICollection<IScriptable> objects, Action<TraceLevel, string> log) {
+			if (!objects.Any()) return;
+			if (!Dirs.Contains(name)) return;
+			var dir = Path.Combine(Dir, name);
+			Directory.CreateDirectory(dir);
+			var filePath = Path.Combine(dir, MakeFileName(objects.First(), prefix_dbo) + ".sql");
+			var script = new StringBuilder();
+			log(TraceLevel.Verbose, $"Scripting {name} {objects.First()} with {objects.Count} items");
+			foreach (var o in objects) {
+				script.AppendLine(o.ScriptCreate()).AppendLine("GO").AppendLine();
+			}
+			File.AppendAllText(filePath, script.ToString());
 		}
 
 		private static string MakeFileName(object o, bool prefix_dbo = true) {

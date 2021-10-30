@@ -43,6 +43,10 @@ namespace SchemaZen.console {
 				"schemas=",
 				"A comma separated list of schemas that only the objects within these will be scripted. ",
 				o => Schemas = o);
+			HasOption(
+			   "groupobjects",
+			   "Group table sub-objects such as keys into one file for the table, rather than separate folders",
+			   o => GroupObjects = o != null);
 		}
 
 		private Logger _logger;
@@ -78,7 +82,8 @@ namespace SchemaZen.console {
 				Logger = _logger,
 				Overwrite = Overwrite,
 				Timeout = commandTimeout,
-				PrefixDbo = !NoPrefixDbo
+				PrefixDbo = !NoPrefixDbo,
+				GroupObjects = GroupObjects
 			};
 
 			var filteredTypes = HandleFilteredTypes();

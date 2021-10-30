@@ -10,8 +10,8 @@ namespace SchemaZen.Library.Command {
 		public string OutDiff { get; set; }
 
 		public bool Execute() {
-			var sourceDb = new Database(prefix_dbo: PrefixDbo);
-			var targetDb = new Database(prefix_dbo: PrefixDbo);
+			var sourceDb = new Database(prefix_dbo: PrefixDbo, groupObjects: GroupObjects);
+			var targetDb = new Database(prefix_dbo: PrefixDbo, groupObjects: GroupObjects);
 			sourceDb.Connection = Source;
 			targetDb.Connection = Target;
 			sourceDb.Load();
